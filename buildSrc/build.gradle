@@ -1,0 +1,103 @@
+buildscript {
+  repositories {
+    google()
+    jcenter()
+  }
+  dependencies {
+    classpath 'com.jfrog.bintray.gradle:gradle-bintray-plugin:1.6'
+  }
+}
+
+allprojects {
+  repositories {
+    google()
+    jcenter()
+  }
+  apply plugin: 'maven'
+  apply plugin: 'maven-publish'
+  apply plugin: 'groovy'
+}
+
+
+apply plugin: 'maven'
+apply plugin: 'maven-publish'
+apply plugin: 'com.jfrog.bintray'
+
+def pomConfig = {
+  licenses {
+    license {
+      name "The Apache Software License, Version 2.0"
+      url "http://www.apache.org/licenses/LICENSE-2.0.txt"
+      distribution "repo"
+    }
+  }
+  developers {
+    developer {
+      id ""
+      name ""
+      email ""
+    }
+  }
+}
+
+task sourcesJar(type: Jar, dependsOn: classes) {
+  classifier = 'sources'
+  from sourceSets.main.allSource
+}
+
+artifacts {
+  archives sourcesJar
+}
+
+publishing {
+  publications {
+    MyPublication(MavenPublication) {
+      from components.java
+      groupId 'me.ele'
+      artifactId 'mess-plugin'
+      version '1.1.6'
+
+      pom.withXml {
+        def root = asNode()
+        root.appendNode('description', 'A gradle plugin for publishing to Bintray')
+        root.children().last() + pomConfig
+      }
+
+      artifact sourcesJar
+      archivesBaseName = 'messProguard'
+    }
+  }
+}
+
+dependencies {
+  implementation fileTree(include: ['*.jar'], dir: 'libs')
+  implementation gradleApi()
+  implementation localGroovy()
+  implementation 'com.android.tools.build:gradle:3.5.0'
+}
+
+
+try {
+  Properties properties = new Properties()
+  properties.load(project.rootProject.file('local.properties').newDataInputStream())
+
+  bintray {
+    user = properties.getProperty("bintrayUser")
+    key = properties.getProperty("bintrayApiKey")
+    publications = ['MyPublication']
+    pkg {
+      repo = 'maven'
+      name = 'Mess'
+      userOrg = 'jackcho'
+      licenses = ['Apache-2.0']
+      vcsUrl = 'https://github.com/bintray/gradle-bintray-plugin.git'
+      version {
+        name = '1.1.6'
+        attributes = ['gradle-plugin': 'Mess:me.ele:mess-plugin']
+      }
+    }
+  }
+} catch (Exception e) {
+  println e.toString()
+}
+
