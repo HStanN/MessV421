@@ -1,50 +1,15 @@
-# Mess
+### 说明
+ 此项目基于[Mess](https://github.com/eleme/Mess)，为适配4.2.1版本android gradle tools做了一些代码改动，改造思路参考了[linxuebin1990](https://github.com/linxuebin1990/Mess)
 
+### 改造
+ 编译相关的task的名字发生有一些变化，部分临时生成的build文件目录也有变化，但是总体处理思路不变，具体参考[文章](https://blog.csdn.net/wolinxuebin/article/details/86631368)
 
-**mess** is a gradle plugin for obfuscating all code including activity, service, receiver, provider and custom view. It's really very cool to obfuscate all codes, lowers code readability after reverse engineering and ensures code's safety. 
+ 4.x起编译打包时生成的```aapt_file```将只包含需要```keep```的```class``````-keep class xxx.xx.xx { <init>(); }```,而之前版本不仅包含需要```keep```的```class```还包含```# Referenced at xxx```引用该```class```的资源路径，原来的代码是根据每个```class```的引用路径，再去找对应```xml```修改，但是新版本不包含引用路径后就不能这么做了。这里我选择了最简单粗暴的做法，就是找到```layout```的路径后直接遍历目录并比对是否包含所```keep```的```class```
 
-**mess** is super easy to integrate with your app, its implementation is also clear to understand. During android gradle assemble task execution, It has a lot of tasks to do,  and can be divided to resource process & code process briefly.  
+ 相对来说AndroidManifest文件修改就比较简单，只是最后的build目录名字变了，现在在```
+ "${project.buildDir.absolutePath}/intermediates/packaged_manifests/${adjustAssembleName}/AndroidManifest.xml"```下
 
- **process\**Resources** is the last task in resource process, it will generate a merged **AndroidManifest.xml**,  **aapt_rules.txt**  and  a merged **res** directory in project build dir.  aapt_rules.txt is the output file after aapt, it contains all classes in xml files, and then this file is delivered to proguard task as a list of keeps. 
- **transformClassesAndResourcesWithProguardFor\**** is the proguard task which obfuscates code,  it generates a **mapping.txt** file which contains all mapping relation between origin and obfuscated classes. 
- 
- **mess** hooks two android gradle tasks: **process\**Resources** & **package\****, hook processResources task is to clear aapt_rules.txt,  tells proguard not to obfuscate all the classes in xml;  package task is the last task before package code & resource into apk, it runs after proguard, mess hooks it just to read the obfuscation mapping relation, then rewrite these into resources again, finally execute processResources task again. If your app sets **shrinkResources** to be true, then execute shrink task one more time. 
- 
+ *PS*：由于没有找到原来获取```aapt2```路径的替换方法，所以简单粗暴的直接配置到```local.properties```中读取
 
-
-## Usage
-
-```groovy
-dependencies {
-   ...
-   classpath 'me.ele:mess-plugin:1.1.5'
- }
-  
-apply plugin: 'com.android.library'
-apply plugin: 'me.ele.mess'
-
-```
-
-In some cases, you want to ignore some proguard configuration provided by aar. E.g. latest Butter Knife is an aar which contains proguard.txt, so users do not need to configure its proguard manually.
-However, we would like to still obfuscate classes used with Butter Knife. So we provide an extension for such scenario.
-
-```groovy
-mess {
-    ignoreProguard 'com.jakewharton:butterknife'
-}
-```
-
-If you are using AAPT2, please disable AAPT2 by setting `android.enableAapt2=false` in your gradle.properties file.
-
-As a result, the Butter Knife's proguard configuration will be ignored. And those activities, views, fragments will be obfuscated by Mess.
-
-That's all, just simple as that
-
-## Note
-As almost every Android project uses [Butter Knife](https://jakewharton.github.io/butterknife/) for view injection. And Butter Knife has its own proguard rules which keeps every class using Butter Knife. As as result, almost every android activity, fragment, custom view would be kept. And out Mess plugin is useless.
-
-But good news is that we studied Butter Knife source code and figured it out. And the solution is also a gradle plugin [ButterMess](https://github.com/peacepassion/ButterMess) which has been a submodule of this project.
-
-## feel free to use, welcome issue and comment
-
-
+### 最后
+ 由于赶进度，所以这个插件的修改非常仓促，完全没有代码的优化（本着能用就行的原则）,欢迎各位可以提交PR
