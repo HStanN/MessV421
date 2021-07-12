@@ -15,6 +15,7 @@ import java.lang.reflect.Field
 class MessPlugin implements Plugin<Project> {
 
     static final String TAG = "MessPlugin"
+
     @Override
     void apply(Project project) {
         MessExtension ext = project.extensions.create("mess", MessExtension.class)
@@ -29,28 +30,28 @@ class MessPlugin implements Plugin<Project> {
                         if (messProguardFile.exists()) {
                             messProguardFile.delete()
                         }
-                        String taskName = "transformClassesAndResourcesWithProguardFor${variant.name.capitalize()}"
+                        String taskName = "minify${variant.name.capitalize()}WithR8"
                         def proguardTask = project.tasks.findByName(taskName)
                         if (!proguardTask) {
                             Util.log TAG, "MessPlugin Cannot find Task " + taskName
                             return
                         }
-                        proguardTask.outputs.upToDateWhen {false}
+                        proguardTask.outputs.upToDateWhen { false }
 
-                        def shrinkResForTask = project.tasks.findByName("transformClassesAndDexWithShrinkResFor${variant.name.capitalize()}")
+                        def shrinkResForTask = project.tasks.findByName("shrink${variant.name.capitalize()}Res")
                         if (!shrinkResForTask) {
                             Util.log TAG, "MessPlugin Cannot find shrinkResForTask"
                         }
                         boolean hasProguardExecuted = false
 
                         boolean hasProcessResourcesExecuted = false
-                        output.processResources.doLast {
+                        output.getProcessResourcesProvider().get().doLast {
                             if (hasProcessResourcesExecuted) {
                                 return
                             }
                             hasProcessResourcesExecuted = true
-                            def rulesPath = "${project.buildDir.absolutePath}/intermediates/proguard-rules/${variant.dirName}/aapt_rules.txt"
-                            def rulesPathCopy = "${project.buildDir.absolutePath}/intermediates/proguard-rules/${variant.dirName}/aapt_rules_copy.txt"
+                            def rulesPath = "${project.buildDir.absolutePath}/intermediates/aapt_proguard_file/${variant.name}/aapt_rules.txt"
+                            def rulesPathCopy = "${project.buildDir.absolutePath}/intermediates/aapt_proguard_file/${variant.name}/aapt_rules_copy.txt"
                             Util.log TAG, "MessPlugin rulesPath" + rulesPath
                             File aaptRules = new File(rulesPath)
                             File aaptRulesCopy = new File(rulesPathCopy)
@@ -79,14 +80,6 @@ class MessPlugin implements Plugin<Project> {
                             Util.log TAG, ""
                         }
 
-                        proguardTask.doFirst {
-                            Util.log TAG, "start ignore proguard components"
-                            ext.ignoreProguardComponents.each { String component ->
-                                Util.hideProguardTxt(project, component)
-                            }
-                        }
-
-                        Util.log TAG, "proguard finish, ready to execute rewrite"
                         RewriteComponentTask rewriteTask = project.tasks.create(name: "rewriteComponentFor${variant.name.capitalize()}",
                                 type: RewriteComponentTask
                         ) {
@@ -94,10 +87,19 @@ class MessPlugin implements Plugin<Project> {
                             whiteList = ext.whiteList
                             variantOutput = output
                         }
+
                         proguardTask.finalizedBy rewriteTask
+                        proguardTask.doFirst {
+                            Util.log TAG, "start ignore proguard components"
+                            ext.ignoreProguardComponents.each { String component ->
+                                Util.hideProguardTxt(project, component)
+                            }
+                        }
+
                         proguardTask.doLast {
                             hasProguardExecuted = true
                             Util.log TAG, "proguard finish, ready to execute rewrite"
+//                            rewriteTask.rewrite()
                         }
 
                         proguardTask.doLast {
@@ -109,23 +111,20 @@ class MessPlugin implements Plugin<Project> {
 //                        rewriteTask.finalizedBy processAndroidResourcesTask
 
                         if (shrinkResForTask) {
-                            Util.log TAG, "ready shrinkResForTask"
+//                            Util.log TAG, "ready shrinkResForTask"
+                            shrinkResForTask.dependsOn rewriteTask
                             shrinkResForTask.doFirst {
                                 if (hasProguardExecuted) {
                                     return
                                 }
                                 Util.log TAG, "shrinkResForTask start, ready to execute rewrite"
-                                RewriteComponentTask rewriteTask1 = project.tasks.create(name: "rewriteComponentFor${variant.name.capitalize()}_1",
-                                        type: RewriteComponentTask){
-                                    applicationVariant = variant
-                                    variantOutput = output
-                                }
-                                rewriteTask1.rewrite()
+//                                RewriteComponentTask rewriteTask1 = project.tasks.create(name: "rewriteComponentFor${variant.name.capitalize()}_1",
+//                                        type: RewriteComponentTask){
+//                                    applicationVariant = variant
+//                                    variantOutput = output
+//                                }
+//                                rewriteTask1.rewrite()
                             }
-//                            processAndroidResourcesTask.doLast{
-//                                Util.log TAG, "execute process resources again"
-//                                Util.log TAG, "end rewrite task"
-//                            }
                         }
                     }
                 }

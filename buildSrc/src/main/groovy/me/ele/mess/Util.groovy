@@ -186,25 +186,7 @@ public class Util {
       return resultMap
   }
 
-    public static Map<String, Map<String, String>> parseAaptRulesGradle6(String manifestPath,ApplicationVariant applicationVariant,String rulesPath, Map mappingMap, List<String> whiteList) {
-        List<File> layoutDirs = new ArrayList<>()
-        List<SourceProvider> sourceProviders =  applicationVariant.getSourceSets()
-        for (SourceProvider sp : sourceProviders){
-            Collection collection = sp.getResDirectories()
-            for (File file : collection){
-                if (file.exists()){
-                    File[] childs = file.listFiles()
-                    if (childs != null && childs.length > 0){
-                        for (File f : childs){
-                            if (f.name.startsWith("layout")){
-                                layoutDirs.add(f)
-                                log TAG,"layout-path = " + f.getAbsolutePath()
-                            }
-                        }
-                    }
-                }
-            }
-        }
+    public static Map<String, Map<String, String>> parseAaptRulesGradle6(List<File> layoutDirs,String manifestPath,ApplicationVariant applicationVariant,String rulesPath, Map mappingMap, List<String> whiteList) {
         File manifestFile = new File(manifestPath)
         String manifestText = manifestFile.getText()
 
@@ -215,18 +197,14 @@ public class Util {
         log TAG, "start parseAaptRules"
         for (String line : aaptRules.readLines()) {
            if (line.startsWith("-keep class ")) {
-                log TAG, line
                 line = line.replace("-keep class ", '')
                 String[] strings = line.split(" ")
                 if (strings.length > 1) {
                     String className = strings[0]
-                    log TAG, className
-//                  log TAG, "rewrite className = " + className
                     if (className == null || className.isEmpty()) {
                         continue
                     }
                     String value = mappingMap.get(className)
-//                  log TAG, "rewrite mappingValue = " + value
                     if (value != null && !value.isEmpty() && className != value) {
                         if (manifestText.contains(className)){
                             log TAG,"AndroidManifest.xml contains " + className

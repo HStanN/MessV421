@@ -73,7 +73,7 @@ dependencies {
   implementation fileTree(include: ['*.jar'], dir: 'libs')
   implementation gradleApi()
   implementation localGroovy()
-  implementation 'com.android.tools.build:gradle:3.5.0'
+  implementation 'com.android.tools.build:gradle:4.2.1'
 }
 
 

@@ -2,8 +2,8 @@ package me.ele.mess
 
 import com.android.build.gradle.api.ApplicationVariant
 import com.android.build.gradle.api.BaseVariantOutput
-import com.android.build.gradle.internal.transforms.ShrinkResourcesTransform
 import com.android.build.gradle.tasks.ProcessAndroidResources
+import com.android.builder.model.SourceProvider
 import com.android.sdklib.BuildToolInfo
 import groovy.io.FileType
 import groovy.json.StringEscapeUtils
@@ -39,7 +39,9 @@ class RewriteComponentTask extends DefaultTask {
         reader.pump(new MappingProcessor() {
             @Override
             boolean processClassMapping(String className, String newClassName) {
-                map.put(className, newClassName)
+                if (className != newClassName){
+                    map.put(className, newClassName)
+                }
                 return false
             }
 
@@ -61,15 +63,38 @@ class RewriteComponentTask extends DefaultTask {
         // the key2 will be mapped to, me.ele.aNew
         map = Util.sortMapping(map)
 
+        List<File> layoutDirs = new ArrayList<>()
+        List<SourceProvider> sourceProviders =  applicationVariant.getSourceSets()
+        for (SourceProvider sp : sourceProviders){
+            Collection collection = sp.getResDirectories()
+            for (File file : collection){
+                if (file.exists()){
+                    File[] childs = file.listFiles()
+                    if (childs != null && childs.length > 0){
+                        for (File f : childs){
+                            if (f.name.startsWith("layout")){
+                                layoutDirs.add(f)
+                                Util.log TAG,"layout-path = " + f.getAbsolutePath()
+                                Util.log TAG,"path readable = " + f.canRead()
+                                Util.log TAG,"path writeable = " + f.canWrite()
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // parse aapt_rules
-        def rulesPathCopy = "${project.buildDir.absolutePath}/intermediates/proguard-rules/${applicationVariant.dirName}/aapt_rules_copy.txt"
+        def rulesPathCopy = "${project.buildDir.absolutePath}/intermediates/aapt_proguard_file/${applicationVariant.name}/aapt_rules_copy.txt"
         Util.log TAG, "rulesPathCopy " + rulesPathCopy
+        Util.log TAG, "map " + map
         int gradleVersion = Integer.parseInt(project.getGradle().getGradleVersion().split("\\.")[0])
         Map<String, Map<String, String>> replaceMap
         if (gradleVersion >= 6){
             String adjustAssembleName = applicationVariant.assemble.name.substring(8) // assembleDebug
             String manifestPath = "${project.buildDir.absolutePath}/intermediates/merged_manifests/${adjustAssembleName}/AndroidManifest.xml"
-            replaceMap = Util.parseAaptRulesGradle6(manifestPath,applicationVariant,rulesPathCopy, map, whiteList)
+            replaceMap = Util.parseAaptRulesGradle6(layoutDirs,manifestPath,applicationVariant
+                    ,rulesPathCopy, map, whiteList)
         }else{
             replaceMap = Util.parseAaptRules(rulesPathCopy, map, whiteList)
         }
@@ -91,7 +116,12 @@ class RewriteComponentTask extends DefaultTask {
                 char[] chars = adjustAssembleName.toCharArray()
                 chars[0] = Character.toLowerCase(chars[0])
                 adjustAssembleName = chars.toString()
-                realPath = "${project.buildDir.absolutePath}/intermediates/merged_manifests/${adjustAssembleName}/AndroidManifest.xml"
+                if (gradleVersion >= 6){
+                    realPath = "${project.buildDir.absolutePath}/intermediates/packaged_manifests/${adjustAssembleName}/AndroidManifest.xml"
+
+                }else{
+                    realPath = "${project.buildDir.absolutePath}/intermediates/merged_manifests/${adjustAssembleName}/AndroidManifest.xml"
+                }
             }
             Util.log TAG, "rewrite ${realPath}"
             replaceMap.get("AndroidManifest.xml").each { k, v ->
@@ -109,11 +139,8 @@ class RewriteComponentTask extends DefaultTask {
 //                Util.log TAG, "rewrite value2 = " + v2
 //            }
 //        }
-
-
-        Util.log TAG, ""
         long t0 = System.currentTimeMillis()
-        File resDir = new File(getResPath())
+
         def localProperties = new File(project.rootDir.getPath() + "/local.properties")
         List<String> lines = localProperties.readLines()
         String aapt2Path = ''
@@ -122,122 +149,162 @@ class RewriteComponentTask extends DefaultTask {
             if (line.startsWith("aapt2.path=")){
                 aapt2Path = StringEscapeUtils.unescapeJava(line.replace("aapt2.path=",""))
                 Util.log TAG,"aapt2 Path = " + aapt2Path
-                break
             }
         }
-        for (File dir : resDir.listFiles()) {
-            if (dir.isFile() && dir.name.endsWith(".xml.flat")) {
-                List<String> xmlPath = Util.parseAaptRulesGetXml(rulesPathCopy)
-                String resPath = getResPath()
+
+        if (gradleVersion >= 6){
+            String resPath = getResPath()
+            //直接遍历res路径下的layout，并搜索是否包含map中的key 如果包含则替换
+            for (File file : layoutDirs){
+                File[] childs = file.listFiles()
+                for (File layout : childs){
+                    String orgTxt = layout.getText(CHARSET)
+                    String newTxt = orgTxt
+                    Util.log TAG, 'rewrite file: ' + file.absolutePath
+                    map.each { k, v ->
+                        boolean hasContains = newTxt.contains(k + "\n") || newTxt.contains(k + "\r") || newTxt.contains(k + "\r\n") || newTxt.contains(k + " ") || newTxt.contains(k + ">") || newTxt.contains("class=\"" + k)
+                        if (hasContains){
+                            newTxt = newTxt.replace(k + "\n", v + "\n")
+                            newTxt = newTxt.replace(k + "\r", v + "\r")
+                            newTxt = newTxt.replace(k + "\r\n", v + "\r\n")
+                            newTxt = newTxt.replace(k + " ", v + " ")
+                            newTxt = newTxt.replace(k + ">", v + ">")
+                            newTxt = newTxt.replace("class=\"" + k, "class=\"" + v)
+                            Util.log TAG, "replace ${k} -> ${v}, sucessed: ${hasContains}"
+                        }
+                    }
+                    if (newTxt != orgTxt) {
+                        layout.setText(newTxt, CHARSET)
+                        // aapt compile
+                        Util.log TAG, "Aapt2 start!!"
+                        def sout = new StringBuilder(), serr = new StringBuilder()
+                        def proc = "${aapt2Path} compile -o ${resPath} ${layout.getAbsolutePath()}".execute()
+                        proc.consumeProcessOutput(sout, serr)
+                        proc.waitForOrKill(1000)
+                        Util.log TAG, "rewrite out> $sout err> $serr"
+                        // recover xml file
+                        layout.setText(orgTxt, CHARSET)
+                    }
+                    Util.log TAG, ""
+                }
+            }
+        }else{
+            Util.log TAG, ""
+            File resDir = new File(getResPath())
+            for (File dir : resDir.listFiles()) {
+                if (dir.isFile() && dir.name.endsWith(".xml.flat")) {
+                    List<String> xmlPath = Util.parseAaptRulesGetXml(rulesPathCopy)
+                    String resPath = getResPath()
 //                BuildToolInfo buildToolInfo = applicationVariant.androidBuilder.getTargetInfo().getBuildTools()
 //                aapt2Path = buildToolInfo.getPath(BuildToolInfo.PathId.AAPT2)
-                Util.log TAG, "####### aapt2Path path = " + aapt2Path + " ###########"
-                for (String path : xmlPath) {
-                    String[] keyStrs = path.split(Util.FILE_SPLIT_STR)
-                    int len = keyStrs.length
-                    if (len >= 2) {
-                        String key = keyStrs[len - 2] + File.separator + keyStrs[len - 1]
-                        List<String> keys = new ArrayList<String>()
-                        if (replaceMap.containsKey(key)) {
-                            keys.add(key)
-                        }
-                        if (keyStrs[len - 2].contains("-")) {
-                            key = keyStrs[len - 2].split("-")[0] + File.separator + keyStrs[len - 1]
+                    Util.log TAG, "####### aapt2Path path = " + aapt2Path + " ###########"
+                    for (String path : xmlPath) {
+                        String[] keyStrs = path.split(Util.FILE_SPLIT_STR)
+                        int len = keyStrs.length
+                        if (len >= 2) {
+                            String key = keyStrs[len - 2] + File.separator + keyStrs[len - 1]
+                            List<String> keys = new ArrayList<String>()
                             if (replaceMap.containsKey(key)) {
                                 keys.add(key)
                             }
-                        }
-
-                        if (keys.size() != 0) {
-                            File file = new File(path)
-                            String orgTxt = file.getText(CHARSET)
-                            String newTxt = orgTxt
-                            Map<String, String> mp = new HashMap<>()
-                            for (String kk: keys) {
-                                mp.putAll(replaceMap.get(kk))
-                            }
-                            Util.log TAG, 'rewrite file: ' + file.absolutePath
-                            mp.each { k, v ->
-                                boolean hasContains = newTxt.contains(k + "\n") || newTxt.contains(k + "\r") || newTxt.contains(k + "\r\n") || newTxt.contains(k + " ") || newTxt.contains(k + ">") || newTxt.contains("class=\"" + k)
-                                newTxt = newTxt.replace(k + "\n", v + "\n")
-                                newTxt = newTxt.replace(k + "\r", v + "\r")
-                                newTxt = newTxt.replace(k + "\r\n", v + "\r\n")
-                                newTxt = newTxt.replace(k + " ", v + " ")
-                                newTxt = newTxt.replace(k + ">", v + ">")
-                                newTxt = newTxt.replace("class=\"" + k, "class=\"" + v)
-                                Util.log TAG, "replace ${k} -> ${v}, sucessed: ${hasContains}"
-                                if (!hasContains) {
-                                    Util.log TAG, "Error: replace ${k} -> ${v} failed."
+                            if (keyStrs[len - 2].contains("-")) {
+                                key = keyStrs[len - 2].split("-")[0] + File.separator + keyStrs[len - 1]
+                                if (replaceMap.containsKey(key)) {
+                                    keys.add(key)
                                 }
                             }
-                            if (newTxt != orgTxt) {
-                                file.setText(newTxt, CHARSET)
-                                // aapt compile
-                                Util.log TAG, "Aapt2 start!!"
-                                def sout = new StringBuilder(), serr = new StringBuilder()
-                                def proc = "${aapt2Path} compile -o ${resPath} ${path}".execute()
-                                proc.consumeProcessOutput(sout, serr)
-                                proc.waitForOrKill(1000)
-                                Util.log TAG, "rewrite out> $sout err> $serr"
 
-                                // recover xml file
-                                file.setText(orgTxt, CHARSET)
+                            if (keys.size() != 0) {
+                                File file = new File(path)
+                                String orgTxt = file.getText(CHARSET)
+                                String newTxt = orgTxt
+                                Map<String, String> mp = new HashMap<>()
+                                for (String kk: keys) {
+                                    mp.putAll(replaceMap.get(kk))
+                                }
+                                Util.log TAG, 'rewrite file: ' + file.absolutePath
+                                mp.each { k, v ->
+                                    boolean hasContains = newTxt.contains(k + "\n") || newTxt.contains(k + "\r") || newTxt.contains(k + "\r\n") || newTxt.contains(k + " ") || newTxt.contains(k + ">") || newTxt.contains("class=\"" + k)
+                                    newTxt = newTxt.replace(k + "\n", v + "\n")
+                                    newTxt = newTxt.replace(k + "\r", v + "\r")
+                                    newTxt = newTxt.replace(k + "\r\n", v + "\r\n")
+                                    newTxt = newTxt.replace(k + " ", v + " ")
+                                    newTxt = newTxt.replace(k + ">", v + ">")
+                                    newTxt = newTxt.replace("class=\"" + k, "class=\"" + v)
+                                    Util.log TAG, "replace ${k} -> ${v}, sucessed: ${hasContains}"
+                                    if (!hasContains) {
+                                        Util.log TAG, "Error: replace ${k} -> ${v} failed."
+                                    }
+                                }
+                                if (newTxt != orgTxt) {
+                                    file.setText(newTxt, CHARSET)
+                                    // aapt compile
+                                    Util.log TAG, "Aapt2 start!!"
+                                    def sout = new StringBuilder(), serr = new StringBuilder()
+                                    def proc = "${aapt2Path} compile -o ${resPath} ${path}".execute()
+                                    proc.consumeProcessOutput(sout, serr)
+                                    proc.waitForOrKill(1000)
+                                    Util.log TAG, "rewrite out> $sout err> $serr"
+
+                                    // recover xml file
+                                    file.setText(orgTxt, CHARSET)
+                                }
+                                Util.log TAG, ""
                             }
-                            Util.log TAG, ""
                         }
                     }
+                    break
                 }
-                break
-            }
-            if (dir.exists() && dir.isDirectory() && isLayoutsDir(dir.name)) {
-                dir.eachFileRecurse(FileType.FILES) { File file ->
-                    String[] paths = file.absolutePath.split(Util.FILE_SPLIT_STR)
-                    int len = paths.length
-                    if (len >= 2) {
-                        List<String> keys = new ArrayList<String>()
-                        String key = paths[len - 2] + File.separator + paths[len - 1]
-                        if (replaceMap.containsKey(key)) {
-                            keys.add(key)
-                        }
-                        if (paths[len - 2].contains("-")) {
-                            key = paths[len - 2].split("-")[0] + File.separator + paths[len - 1]
+                if (dir.exists() && dir.isDirectory() && isLayoutsDir(dir.name)) {
+                    dir.eachFileRecurse(FileType.FILES) { File file ->
+                        String[] paths = file.absolutePath.split(Util.FILE_SPLIT_STR)
+                        int len = paths.length
+                        if (len >= 2) {
+                            List<String> keys = new ArrayList<String>()
+                            String key = paths[len - 2] + File.separator + paths[len - 1]
                             if (replaceMap.containsKey(key)) {
                                 keys.add(key)
                             }
-                        }
-
-                        if (keys.size() != 0) {
-                            String orgTxt = file.getText(CHARSET)
-                            String newTxt = orgTxt
-                            Map<String, String> mp = new HashMap<>()
-                            for (String kk: keys) {
-                                mp.putAll(replaceMap.get(kk))
-                            }
-                            Util.log TAG, 'rewrite file: ' + file.absolutePath
-                            mp.each { k, v ->
-                                boolean hasContains = newTxt.contains(k + "\n") || newTxt.contains(k + "\r") || newTxt.contains(k + "\r\n") || newTxt.contains(k + " ") || newTxt.contains(k + ">") || newTxt.contains("class=\"" + k)
-                                newTxt = newTxt.replace(k + "\n", v + "\n")
-                                newTxt = newTxt.replace(k + "\r", v + "\r")
-                                newTxt = newTxt.replace(k + "\r\n", v + "\r\n")
-                                newTxt = newTxt.replace(k + " ", v + " ")
-                                newTxt = newTxt.replace(k + ">", v + ">")
-                                newTxt = newTxt.replace("class=\"" + k, "class=\"" + v)
-                                Util.log TAG, "replace ${k} -> ${v}, sucessed: ${hasContains}"
-                                if (!hasContains) {
-                                    Util.log TAG, "Error: replace ${k} -> ${v} failed."
+                            if (paths[len - 2].contains("-")) {
+                                key = paths[len - 2].split("-")[0] + File.separator + paths[len - 1]
+                                if (replaceMap.containsKey(key)) {
+                                    keys.add(key)
                                 }
                             }
-                            if (newTxt != orgTxt) {
+
+                            if (keys.size() != 0) {
+                                String orgTxt = file.getText(CHARSET)
+                                String newTxt = orgTxt
+                                Map<String, String> mp = new HashMap<>()
+                                for (String kk: keys) {
+                                    mp.putAll(replaceMap.get(kk))
+                                }
+                                Util.log TAG, 'rewrite file: ' + file.absolutePath
+                                mp.each { k, v ->
+                                    boolean hasContains = newTxt.contains(k + "\n") || newTxt.contains(k + "\r") || newTxt.contains(k + "\r\n") || newTxt.contains(k + " ") || newTxt.contains(k + ">") || newTxt.contains("class=\"" + k)
+                                    newTxt = newTxt.replace(k + "\n", v + "\n")
+                                    newTxt = newTxt.replace(k + "\r", v + "\r")
+                                    newTxt = newTxt.replace(k + "\r\n", v + "\r\n")
+                                    newTxt = newTxt.replace(k + " ", v + " ")
+                                    newTxt = newTxt.replace(k + ">", v + ">")
+                                    newTxt = newTxt.replace("class=\"" + k, "class=\"" + v)
+                                    Util.log TAG, "replace ${k} -> ${v}, sucessed: ${hasContains}"
+                                    if (!hasContains) {
+                                        Util.log TAG, "Error: replace ${k} -> ${v} failed."
+                                    }
+                                }
+                                if (newTxt != orgTxt) {
 //                            Util.log TAG, 'rewrite file: ' + file.absolutePath
-                                file.setText(newTxt, CHARSET)
+                                    file.setText(newTxt, CHARSET)
+                                }
+                                Util.log TAG, ""
                             }
-                            Util.log TAG, ""
                         }
                     }
                 }
             }
         }
-        ProcessAndroidResources processAndroidResourcesTask = variantOutput.processResources
+        ProcessAndroidResources processAndroidResourcesTask = variantOutput.getProcessResourcesProvider().get()
         try {
             //this is for Android gradle 2.3.3 & above
             Field outcomeField = processAndroidResourcesTask.state.getClass().getDeclaredField("outcome")
@@ -328,6 +395,7 @@ class RewriteComponentTask extends DefaultTask {
             }
 
         }
+        Util.log TAG,"res path = " + resPath
         return resPath
     }
 
